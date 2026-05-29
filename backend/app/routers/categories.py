@@ -43,15 +43,17 @@ async def _with_brand_count(db: AsyncSession, cats: list[Category]) -> list[Cate
 async def get_categories_meta(db: AsyncSession = Depends(get_db)):
     """返回所有大类和中类列表，用于筛选器。"""
     groups_result = await db.execute(
-        select(func.distinct(Category.group_name))
+        select(Category.group_name)
         .where(Category.group_name.isnot(None))
+        .distinct()
         .order_by(Category.group_name)
     )
     groups = [r[0] for r in groups_result]
 
     parents_result = await db.execute(
-        select(Category.group_name, func.distinct(Category.parent_name))
+        select(Category.group_name, Category.parent_name)
         .where(Category.parent_name.isnot(None))
+        .distinct()
         .order_by(Category.group_name, Category.parent_name)
     )
     parents: dict[str, list[str]] = {}
