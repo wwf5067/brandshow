@@ -212,14 +212,31 @@ onMounted(() => {
   window.addEventListener('resize', onResize)
   // 从管理后台跳转过来时自动打开品牌抽屉
   if (props.autoOpenCatId) {
-    drawerCatId.value = props.autoOpenCatId
-    drawerTitle.value = props.autoOpenCatName || '品牌排行'
-    drawerCat.value = { id: props.autoOpenCatId, name: props.autoOpenCatName }
-    drawerVisible.value = true
-    store.fetchBrands(props.autoOpenCatId)
+    _openCat(props.autoOpenCatId, props.autoOpenCatName)
   }
 })
 onUnmounted(() => window.removeEventListener('resize', onResize))
+
+// 品牌反查切换过来时响应式打开抽屉
+watch(() => props.autoOpenCatId, (id) => {
+  if (id) _openCat(id, props.autoOpenCatName)
+})
+
+function _openCat(id, name) {
+  // 从 store 里找完整的 cat 对象（含 health_tag 等）
+  let fullCat = null
+  for (const g of store.groups) {
+    for (const p of g.parents) {
+      fullCat = p.categories.find(c => c.id === id) || fullCat
+    }
+  }
+  fullCat = fullCat || store.ungrouped.find(c => c.id === id)
+  drawerCatId.value = id
+  drawerTitle.value = name || fullCat?.name || '品牌排行'
+  drawerCat.value = fullCat || { id, name }
+  drawerVisible.value = true
+  store.fetchBrands(id)
+}
 
 // 大类图标映射
 const GROUP_ICONS = {

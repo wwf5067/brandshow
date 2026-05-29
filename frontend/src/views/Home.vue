@@ -52,12 +52,17 @@ const stats = ref(null)
 const tab = ref('browse')
 const route = useRoute()
 
-// 从管理后台跳转过来时，自动定位并打开品牌抽屉
+// 品牌反查/管理后台跳转过来时，自动定位并打开品牌抽屉
 const pendingCatId = ref(null)
 const pendingCatName = ref(null)
 
 function gotoCategory(cat) {
+  // 保存导航位置（大类/中类）
   store.saveNav(cat.group_name, cat.parent_name || '__none__')
+  // 记录要打开的小类
+  pendingCatId.value = cat.id
+  pendingCatName.value = cat.name
+  // 切换到浏览 tab
   tab.value = 'browse'
 }
 
