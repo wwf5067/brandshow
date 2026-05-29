@@ -36,11 +36,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import categories, crawler, brands  # noqa: E402
+from app.routers import categories, crawler, brands, imgproxy  # noqa: E402
 
 app.include_router(categories.router, prefix="/api/v1")
 app.include_router(crawler.router, prefix="/api/v1")
 app.include_router(brands.router, prefix="/api/v1")
+app.include_router(imgproxy.router)  # /img-proxy/* — no /api/v1 prefix
 
 
 @app.get("/health")
