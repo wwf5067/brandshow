@@ -1,13 +1,11 @@
 # 推 main 时自动部署到腾讯云 Lighthouse
 #
-# 加速优化：
-#   - 检测前端/后端文件是否变化，没变化则跳过 build，直接复用上次产物
-#   - 前端/后端并行构建
-#   - GHA layer cache 加速 Docker build
-#   - concurrency 取消旧的 run
+# 加速方案：不传镜像 tar，只传代码（几十KB），服务器本地 build
+# - 前端 build 产物 ~2MB（压缩）
+# - 后端代码 ~50KB（只传 app/ 目录）
+# - 服务器 Docker layer cache：依赖不变时 build <30s
 #
-# 必需的 GitHub Secrets:
-#   SSH_HOST / SSH_USER / SSH_PORT / SSH_KEY
+# 必需 Secrets: SSH_HOST / SSH_USER / SSH_PORT / SSH_KEY
 
 name: deploy
 
@@ -27,6 +25,7 @@ jobs:
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
       backend: ${{ steps.filter.outputs.backend }}
+      nginx: ${{ steps.filter.outputs.nginx }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -37,84 +36,47 @@ jobs:
               - 'frontend/**'
             backend:
               - 'backend/**'
+            nginx:
               - 'deploy/nginx.conf'
 
-  # ── 构建前端 ──────────────────────────────────────────────
+  # ── 构建前端（只在有变化时）────────────────────────────────
   build-frontend:
     needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # 如果前端没有变化，尝试从 cache 恢复上次产物
-      - name: Restore frontend cache
-        id: fe-cache
-        uses: actions/cache@v4
+      - uses: actions/setup-node@v4
         with:
-          path: web-dist.tar.gz
-          key: frontend-dist-${{ hashFiles('frontend/src/**', 'frontend/package.json', 'frontend/vite.config.js') }}
-          restore-keys: frontend-dist-
-
-      - name: Build frontend
-        if: needs.changes.outputs.frontend == 'true' || steps.fe-cache.outputs.cache-hit != 'true'
-        run: |
-          cd frontend
-          npm ci
-          npm run build
-          cd ..
-          tar -czf web-dist.tar.gz -C frontend/dist .
-
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - name: Pack dist
+        run: tar -czf web-dist.tar.gz -C frontend/dist .
       - uses: actions/upload-artifact@v4
         with:
           name: web-dist
           path: web-dist.tar.gz
           retention-days: 3
 
-  # ── 构建后端 ──────────────────────────────────────────────
-  build-backend:
-    needs: changes
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build backend image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./backend
-          file: backend/Dockerfile
-          push: false
-          tags: brandshow-backend:latest
-          cache-from: type=gha,scope=backend
-          cache-to: type=gha,scope=backend,mode=max
-          outputs: type=docker
-
-      - name: Export & compress image
-        run: |
-          docker save brandshow-backend:latest | zstd -T0 -3 -o backend-image.tar.zst
-          ls -lh backend-image.tar.zst
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: backend-image
-          path: backend-image.tar.zst
-          retention-days: 1
-
   # ── 部署 ──────────────────────────────────────────────────
   deploy:
-    needs: [changes, build-frontend, build-backend]
+    needs: [changes, build-frontend]
+    if: always() && !failure() && !cancelled()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      # 下载前端产物（如果本次有构建）
+      - name: Download frontend dist
+        if: needs.changes.outputs.frontend == 'true'
+        uses: actions/download-artifact@v4
         with:
           name: web-dist
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: backend-image
 
       - name: Setup SSH
         run: |
@@ -123,77 +85,97 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p ${{ secrets.SSH_PORT || 22 }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Upload artifacts to server
+      # 只在前端变化时上传 dist（~2MB）
+      - name: Upload frontend dist
+        if: needs.changes.outputs.frontend == 'true'
         run: |
-          scp -P ${{ secrets.SSH_PORT || 22 }} \
-            backend-image.tar.zst \
-            web-dist.tar.gz \
-            deploy/nginx.conf \
-            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
+          scp -P ${{ secrets.SSH_PORT || 22 }} web-dist.tar.gz \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/web-dist.tar.gz
+
+      # 只在后端变化时上传代码（~50KB）
+      - name: Upload backend code
+        if: needs.changes.outputs.backend == 'true'
+        run: |
+          tar -czf backend-code.tar.gz backend/
+          scp -P ${{ secrets.SSH_PORT || 22 }} backend-code.tar.gz \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/backend-code.tar.gz
+
+      # 只在 nginx 变化时上传配置（几KB）
+      - name: Upload nginx config
+        if: needs.changes.outputs.nginx == 'true'
+        run: |
+          scp -P ${{ secrets.SSH_PORT || 22 }} deploy/nginx.conf \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/nginx.conf
 
       - name: Deploy on server
         env:
           BACKEND_CHANGED: ${{ needs.changes.outputs.backend }}
           FRONTEND_CHANGED: ${{ needs.changes.outputs.frontend }}
+          NGINX_CHANGED: ${{ needs.changes.outputs.nginx }}
         run: |
           ssh -tt \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=20 \
             -p ${{ secrets.SSH_PORT || 22 }} \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "BACKEND_CHANGED='${BACKEND_CHANGED}' FRONTEND_CHANGED='${FRONTEND_CHANGED}' bash -s" << 'REMOTE'
+            "BACKEND_CHANGED='${BACKEND_CHANGED}' FRONTEND_CHANGED='${FRONTEND_CHANGED}' NGINX_CHANGED='${NGINX_CHANGED}' bash -s" << 'REMOTE'
             set -euo pipefail
             APP_DIR=/opt/brandshow
 
-            echo "==> Backend changed: ${BACKEND_CHANGED}, Frontend changed: ${FRONTEND_CHANGED}"
+            echo "backend=${BACKEND_CHANGED} frontend=${FRONTEND_CHANGED} nginx=${NGINX_CHANGED}"
 
-            # ── 更新前端 ──
-            echo "==> Updating frontend..."
-            mkdir -p "$APP_DIR/web-dist-staging"
-            rm -rf "$APP_DIR/web-dist-staging"/*
-            tar -xzf /tmp/web-dist.tar.gz -C "$APP_DIR/web-dist-staging"
-            rm /tmp/web-dist.tar.gz
-            rsync -a --delete "$APP_DIR/web-dist-staging/" "$APP_DIR/web-dist/"
-            rm -rf "$APP_DIR/web-dist-staging"
-
-            # ── 更新 nginx 配置 ──
-            OLD_HASH=$(sha256sum "$APP_DIR/nginx.conf" 2>/dev/null | cut -d' ' -f1 || echo "")
-            cp /tmp/nginx.conf "$APP_DIR/nginx.conf"
-            NEW_HASH=$(sha256sum "$APP_DIR/nginx.conf" | cut -d' ' -f1)
-            if [ "$OLD_HASH" != "$NEW_HASH" ]; then
-              echo "==> nginx.conf changed, restarting nginx..."
-              docker restart brandshow-nginx
+            # ── 前端 ──
+            if [ "${FRONTEND_CHANGED}" = "true" ] && [ -f /tmp/web-dist.tar.gz ]; then
+              echo "==> Updating frontend..."
+              mkdir -p "$APP_DIR/web-dist-staging"
+              tar -xzf /tmp/web-dist.tar.gz -C "$APP_DIR/web-dist-staging"
+              rsync -a --delete "$APP_DIR/web-dist-staging/" "$APP_DIR/web-dist/"
+              rm -rf "$APP_DIR/web-dist-staging" /tmp/web-dist.tar.gz
+              echo "Frontend updated"
             fi
 
-            # ── 加载后端镜像 ──
-            echo "==> Loading backend image..."
-            zstd -d /tmp/backend-image.tar.zst --stdout | docker load
-            rm /tmp/backend-image.tar.zst
+            # ── Nginx ──
+            if [ "${NGINX_CHANGED}" = "true" ] && [ -f /tmp/nginx.conf ]; then
+              echo "==> Updating nginx config..."
+              cp /tmp/nginx.conf "$APP_DIR/nginx.conf"
+              rm /tmp/nginx.conf
+              docker restart brandshow-nginx
+              echo "Nginx restarted"
+            fi
 
-            # ── 数据库迁移 ──
-            echo "==> Running migrations..."
-            docker run --rm \
-              --network newsfeed_default \
-              -e DATABASE_URL="$(grep DATABASE_URL $APP_DIR/.env | cut -d= -f2-)" \
-              -w /app \
-              brandshow-backend:latest \
-              alembic upgrade head
+            # ── 后端：本地 build ──
+            if [ "${BACKEND_CHANGED}" = "true" ] && [ -f /tmp/backend-code.tar.gz ]; then
+              echo "==> Updating backend code..."
+              mkdir -p /tmp/brandshow-build
+              tar -xzf /tmp/backend-code.tar.gz -C /tmp/brandshow-build
+              rm /tmp/backend-code.tar.gz
 
-            # ── 重启后端 ──
-            echo "==> Restarting backend..."
-            docker rm -f brandshow-backend 2>/dev/null || true
-            docker run -d \
-              --name brandshow-backend \
-              --network newsfeed_default \
-              --restart unless-stopped \
-              -e DATABASE_URL="$(grep DATABASE_URL $APP_DIR/.env | cut -d= -f2-)" \
-              -e ENVIRONMENT=production \
-              -e CORS_ORIGINS="*" \
-              brandshow-backend:latest
-            docker network connect brandshow_net brandshow-backend 2>/dev/null || true
+              echo "==> Building backend image (local)..."
+              docker build -t brandshow-backend:latest /tmp/brandshow-build/backend
+              rm -rf /tmp/brandshow-build
+              echo "Build complete"
 
-            # ── 清理旧镜像 ──
-            docker image prune -f 2>/dev/null || true
+              echo "==> Running migrations..."
+              docker run --rm \
+                --network newsfeed_default \
+                -e DATABASE_URL="$(grep DATABASE_URL $APP_DIR/.env | cut -d= -f2-)" \
+                -w /app \
+                brandshow-backend:latest \
+                alembic upgrade head
+
+              echo "==> Restarting backend..."
+              docker rm -f brandshow-backend 2>/dev/null || true
+              docker run -d \
+                --name brandshow-backend \
+                --network newsfeed_default \
+                --restart unless-stopped \
+                -e DATABASE_URL="$(grep DATABASE_URL $APP_DIR/.env | cut -d= -f2-)" \
+                -e ENVIRONMENT=production \
+                -e CORS_ORIGINS="*" \
+                brandshow-backend:latest
+              docker network connect brandshow_net brandshow-backend 2>/dev/null || true
+              docker image prune -f 2>/dev/null || true
+            fi
 
             # ── 健康检查 ──
             echo "==> Healthcheck..."
