@@ -7,8 +7,24 @@ from app.models.brand import Brand
 logger = logging.getLogger(__name__)
 
 
+async def _get_brand_annotation(db: AsyncSession, name: str) -> tuple[list | None, str | None]:
+    """从同名品牌中查找已有的标签和说明，用于新品牌自动继承。"""
+    result = await db.execute(
+        select(Brand.tags, Brand.brand_note)
+        .where(Brand.name == name, Brand.tags.isnot(None))
+        .limit(1)
+    )
+    row = result.first()
+    if row:
+        return row.tags, row.brand_note
+    return None, None
+
+
 async def upsert_brands(db: AsyncSession, category_id: int, brands_data: list[dict]) -> None:
-    """Insert or update brands for a category, tracking rank changes."""
+    """Insert or update brands for a category, tracking rank changes.
+    
+    新品牌自动从同名品牌继承 tags 和 brand_note。
+    """
     for data in brands_data:
         name = data.get("name", "").strip()
         if not name:
@@ -33,7 +49,15 @@ async def upsert_brands(db: AsyncSession, category_id: int, brands_data: list[di
                 existing.detail_url = data["detail_url"]
             if data.get("company_name"):
                 existing.company_name = data["company_name"]
+            # 如果当前没有标签，尝试从同名品牌继承
+            if not existing.tags:
+                tags, note = await _get_brand_annotation(db, name)
+                if tags:
+                    existing.tags = tags
+                    existing.brand_note = note
         else:
+            # 新品牌：自动从同名品牌继承标签
+            tags, note = await _get_brand_annotation(db, name)
             db.add(
                 Brand(
                     category_id=category_id,
@@ -44,8 +68,13 @@ async def upsert_brands(db: AsyncSession, category_id: int, brands_data: list[di
                     logo_url=data.get("logo_url"),
                     detail_url=data.get("detail_url"),
                     company_name=data.get("company_name"),
+                    tags=tags,
+                    brand_note=note,
                 )
             )
-            logger.info("New brand added: %s in category %d at rank %d", name, category_id, data.get("rank", 0))
+            if tags:
+                logger.info("New brand %s inherited tags: %s", name, tags)
+            else:
+                logger.info("New brand added: %s in category %d at rank %d", name, category_id, data.get("rank", 0))
 
     await db.commit()
