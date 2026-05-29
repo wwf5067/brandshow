@@ -1,16 +1,13 @@
 # 推 main 时自动部署到腾讯云 Lighthouse
 #
+# 优化方案：构建镜像后直接 scp 传到服务器，不走 GHCR（国内拉取慢）
+#
 # 流程:
-#   1) 构建前端静态产物 (Vue3 Vite)
-#   2) 构建后端 Docker 镜像推到 GHCR
-#   3) SSH 到 Lighthouse 执行远程部署
+#   1) 并行：构建前端静态产物 + 构建后端 Docker 镜像（tar.zst）
+#   2) deploy：SSH 传输产物 → 服务器 docker load → alembic migrate → 重启容器
 #
-# 复用 newsfeed 的同一台 Lighthouse 服务器，brandshow 使用 8090 端口
-# 数据库复用 newsfeed-pg 容器 (加入 newsfeed_default 网络)
-#
-# 必需的 GitHub Secrets (与 newsfeed 共用同一组):
+# 必需的 GitHub Secrets:
 #   SSH_HOST / SSH_USER / SSH_PORT / SSH_KEY
-#   GHCR_TOKEN (或使用 GITHUB_TOKEN)
 
 name: deploy
 
@@ -18,10 +15,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch: {}
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_OWNER: ${{ github.repository_owner }}
 
 jobs:
   build-frontend:
@@ -35,58 +28,50 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
         working-directory: frontend
 
-      - name: Build frontend
-        run: npm run build
+      - run: npm run build
         working-directory: frontend
 
-      - name: Pack static dist
+      - name: Pack frontend dist
         run: tar -czf web-dist.tar.gz -C frontend/dist .
 
       - uses: actions/upload-artifact@v4
         with:
           name: web-dist
           path: web-dist.tar.gz
-          retention-days: 7
+          retention-days: 1
 
   build-backend:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set lowercase image owner
-        id: owner
-        run: echo "lc=${IMAGE_OWNER,,}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute image tag
-        id: meta
-        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build & push backend image
+      - name: Build backend image
         uses: docker/build-push-action@v6
         with:
           context: ./backend
           file: backend/Dockerfile
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.owner.outputs.lc }}/brandshow-backend:${{ steps.meta.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ steps.owner.outputs.lc }}/brandshow-backend:latest
+          push: false
+          tags: brandshow-backend:latest
+          # runner 本地 cache，加速重复构建
           cache-from: type=gha,scope=backend
           cache-to: type=gha,scope=backend,mode=max
+          outputs: type=docker
+
+      - name: Export & compress image
+        run: |
+          docker save brandshow-backend:latest | zstd -T0 -3 -o backend-image.tar.zst
+          ls -lh backend-image.tar.zst
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-image
+          path: backend-image.tar.zst
+          retention-days: 1
 
   deploy:
     needs: [build-frontend, build-backend]
@@ -98,21 +83,9 @@ jobs:
         with:
           name: web-dist
 
-      - name: Set lowercase image owner
-        id: owner
-        run: echo "lc=${IMAGE_OWNER,,}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute image tag
-        id: meta
-        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare deploy bundle
-        run: |
-          mkdir -p bundle
-          cp deploy/docker-compose.prod.yml bundle/
-          cp deploy/nginx.conf bundle/
-          cp web-dist.tar.gz bundle/
-          tar -czf bundle.tar.gz -C bundle .
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-image
 
       - name: Setup SSH
         run: |
@@ -121,110 +94,82 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p ${{ secrets.SSH_PORT || 22 }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Upload bundle
+      - name: Upload artifacts to server
         run: |
-          scp -P ${{ secrets.SSH_PORT || 22 }} bundle.tar.gz \
-            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/brandshow-bundle.tar.gz
+          scp -P ${{ secrets.SSH_PORT || 22 }} \
+            backend-image.tar.zst \
+            web-dist.tar.gz \
+            deploy/nginx.conf \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
 
-      - name: Render remote deploy script
+      - name: Deploy on server
         env:
-          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
-          OWNER: ${{ steps.owner.outputs.lc }}
-        run: |
-          cat > deploy-remote.sh <<'EOS'
-          #!/usr/bin/env bash
-          set -euo pipefail
-
-          : "${IMAGE_TAG:?IMAGE_TAG required}"
-          : "${OWNER:?OWNER required}"
-
-          APP_DIR=/opt/brandshow
-          sudo mkdir -p "$APP_DIR"
-          sudo chown "$USER":"$USER" "$APP_DIR"
-
-          # 解压部署包
-          tar -xzf /tmp/brandshow-bundle.tar.gz -C "$APP_DIR"
-          rm -f /tmp/brandshow-bundle.tar.gz
-
-          # 解压前端静态产物
-          mkdir -p "$APP_DIR/web-dist" "$APP_DIR/web-dist-staging"
-          rm -rf "$APP_DIR/web-dist-staging"/*
-          tar -xzf "$APP_DIR/web-dist.tar.gz" -C "$APP_DIR/web-dist-staging"
-          rm -f "$APP_DIR/web-dist.tar.gz"
-          rsync -a --delete "$APP_DIR/web-dist-staging/" "$APP_DIR/web-dist/"
-          rm -rf "$APP_DIR/web-dist-staging"
-
-          cd "$APP_DIR"
-
-          if [ ! -f .env ]; then
-            echo "ERROR: $APP_DIR/.env missing. Run deploy/bootstrap.sh first." >&2
-            exit 1
-          fi
-
-          # upsert: 有则替换，无则追加
-          upsert_env() {
-            local key="$1" val="$2"
-            if grep -q "^${key}=" .env; then
-              sed -i "s|^${key}=.*|${key}=${val}|" .env
-            else
-              echo "${key}=${val}" >> .env
-            fi
-          }
-          upsert_env BACKEND_IMAGE "ghcr.io/${OWNER}/brandshow-backend:${IMAGE_TAG}"
-
-          # 只在镜像 tag 变化时才拉取（减少国内带宽等待）
-          CURRENT_IMAGE=$(docker inspect --format '{{.Config.Image}}' brandshow-backend-1 2>/dev/null || echo "")
-          NEW_IMAGE="ghcr.io/${OWNER}/brandshow-backend:${IMAGE_TAG}"
-          if [ "$CURRENT_IMAGE" != "$NEW_IMAGE" ]; then
-            echo "==> Pulling new image: ${IMAGE_TAG}"
-            docker pull "$NEW_IMAGE"
-          else
-            echo "==> Image unchanged, skip pull"
-          fi
-
-          # 运行数据库迁移
-          docker compose -f docker-compose.prod.yml --progress plain run --rm migrate
-
-          # 启动/更新服务
-          docker compose -f docker-compose.prod.yml --progress plain up -d
-          docker compose -f docker-compose.prod.yml --progress plain up -d \
-            --force-recreate --no-deps backend
-
-          docker compose -f docker-compose.prod.yml ps
-
-          # ---- 自检 ----
-          echo "==> Verifying deployment..."
-          for i in $(seq 1 15); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-              http://127.0.0.1:8090/health || echo "000")
-            if [ "$code" = "200" ]; then
-              echo "==> Healthcheck passed on attempt $i (HTTP $code)"
-              break
-            fi
-            if [ "$i" = "15" ]; then
-              echo "ERROR: healthcheck failed after 15 attempts (last: $code)" >&2
-              docker compose -f docker-compose.prod.yml logs --tail 30 backend >&2 || true
-              exit 1
-            fi
-            sleep 2
-          done
-          echo "==> Deployment verified: image=${IMAGE_TAG}, health=200"
-          EOS
-          chmod +x deploy-remote.sh
-
-      - name: Upload deploy script
-        run: |
-          scp -P ${{ secrets.SSH_PORT || 22 }} deploy-remote.sh \
-            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/brandshow-deploy.sh
-
-      - name: Run deploy script on host
-        env:
-          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
-          OWNER: ${{ steps.owner.outputs.lc }}
+          IMAGE_SHA: ${{ github.sha }}
         run: |
           ssh -tt \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=20 \
             -p ${{ secrets.SSH_PORT || 22 }} \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "IMAGE_TAG='${IMAGE_TAG}' OWNER='${OWNER}' bash /tmp/brandshow-deploy.sh && rm -f /tmp/brandshow-deploy.sh"
+            'bash -s' << 'REMOTE'
+            set -euo pipefail
+            APP_DIR=/opt/brandshow
+
+            echo "==> Loading backend image..."
+            zstd -d /tmp/backend-image.tar.zst --stdout | docker load
+            rm /tmp/backend-image.tar.zst
+
+            echo "==> Updating frontend..."
+            mkdir -p "$APP_DIR/web-dist-staging"
+            rm -rf "$APP_DIR/web-dist-staging"/*
+            tar -xzf /tmp/web-dist.tar.gz -C "$APP_DIR/web-dist-staging"
+            rm /tmp/web-dist.tar.gz
+            rsync -a --delete "$APP_DIR/web-dist-staging/" "$APP_DIR/web-dist/"
+            rm -rf "$APP_DIR/web-dist-staging"
+
+            echo "==> Updating nginx.conf..."
+            OLD_HASH=$(sha256sum "$APP_DIR/nginx.conf" 2>/dev/null | cut -d' ' -f1 || echo "")
+            cp /tmp/nginx.conf "$APP_DIR/nginx.conf"
+            NEW_HASH=$(sha256sum "$APP_DIR/nginx.conf" | cut -d' ' -f1)
+
+            echo "==> Running migrations..."
+            docker run --rm \
+              --network newsfeed_default \
+              -e DATABASE_URL="$(grep DATABASE_URL $APP_DIR/.env | cut -d= -f2-)" \
+              -w /app \
+              brandshow-backend:latest \
+              alembic upgrade head
+
+            echo "==> Restarting backend..."
+            docker rm -f brandshow-backend 2>/dev/null || true
+            docker run -d \
+              --name brandshow-backend \
+              --network newsfeed_default \
+              --restart unless-stopped \
+              -e DATABASE_URL="$(grep DATABASE_URL $APP_DIR/.env | cut -d= -f2-)" \
+              -e ENVIRONMENT=production \
+              -e CORS_ORIGINS="*" \
+              brandshow-backend:latest
+            # 同时加入 brandshow_net 让 nginx 能访问
+            docker network connect brandshow_net brandshow-backend 2>/dev/null || true
+
+            if [ "$OLD_HASH" != "$NEW_HASH" ]; then
+              echo "==> nginx.conf changed, restarting nginx..."
+              docker restart brandshow-nginx
+            fi
+
+            # 清理旧镜像（保留最近 1 个）
+            docker image prune -f --filter "label!=keep" 2>/dev/null || true
+
+            echo "==> Healthcheck..."
+            for i in $(seq 1 15); do
+              code=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:8090/health || echo "000")
+              if [ "$code" = "200" ]; then
+                echo "==> OK (attempt $i)"
+                break
+              fi
+              [ "$i" = "15" ] && echo "ERROR: healthcheck failed" >&2 && exit 1
+              sleep 2
+            done
+            echo "==> Deploy complete"
+            REMOTE
