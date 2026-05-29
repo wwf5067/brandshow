@@ -129,10 +129,9 @@ async def trigger_category(category_id: int, background_tasks: BackgroundTasks, 
 
 
 @router.post("/schedule/weekly")
-async def trigger_weekly_schedule():
+async def trigger_weekly_schedule(background_tasks: BackgroundTasks):
     """Manually trigger weekly schedule distribution."""
     from app.crawler.scheduler import weekly_schedule_distributor
-    background_tasks = BackgroundTasks()
     background_tasks.add_task(weekly_schedule_distributor)
-    asyncio.create_task(weekly_schedule_distributor())
+    return {"message": "Weekly schedule distribution triggered"}
     return {"message": "Weekly schedule distribution triggered"}
