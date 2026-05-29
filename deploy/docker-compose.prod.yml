@@ -1,0 +1,60 @@
+# brandshow 生产部署
+#
+# 网络策略:
+#   - 加入 newsfeed_default 网络，直连 newsfeed-pg 容器（复用 DB 实例）
+#   - nginx 暴露 8090 端口到宿主机（newsfeed 占用 80）
+#   - backend 仅在 docker 内网，由 nginx 反代
+#
+# 数据库:
+#   - 复用 newsfeed_default 网络里的 postgres 服务
+#   - 使用独立的 database: brandshow
+#
+# 启动前提:
+#   1) /opt/brandshow/.env 已配置
+#   2) newsfeed 项目已在运行（提供 postgres 服务）
+#   3) brandshow 数据库已创建（bootstrap.sh 会处理）
+#   4) 前端静态产物已解压到 ./web-dist/
+
+name: brandshow
+
+services:
+  migrate:
+    image: ${BACKEND_IMAGE}
+    command: ["alembic", "upgrade", "head"]
+    working_dir: /app
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    networks:
+      - newsfeed_default
+    restart: "no"
+
+  backend:
+    image: ${BACKEND_IMAGE}
+    restart: unless-stopped
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      ENVIRONMENT: production
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    networks:
+      - newsfeed_default
+      - brandshow_net
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./web-dist:/usr/share/nginx/html:ro
+    depends_on:
+      - backend
+    networks:
+      - brandshow_net
+
+networks:
+  newsfeed_default:
+    external: true   # 复用 newsfeed 创建的网络，直连 postgres
+  brandshow_net:
+    driver: bridge
