@@ -16,6 +16,11 @@ on:
     branches: [main]
   workflow_dispatch: {}
 
+# 同一时间只允许一个 deploy，新 push 自动取消旧的
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
 jobs:
   build-frontend:
     runs-on: ubuntu-latest
