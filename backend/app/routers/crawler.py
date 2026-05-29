@@ -134,4 +134,22 @@ async def trigger_weekly_schedule(background_tasks: BackgroundTasks):
     from app.crawler.scheduler import weekly_schedule_distributor
     background_tasks.add_task(weekly_schedule_distributor)
     return {"message": "Weekly schedule distribution triggered"}
+
+
+@router.post("/run/daily")
+async def trigger_daily_executor(background_tasks: BackgroundTasks):
+    """Manually trigger today's crawl executor (runs all categories with next_crawl_at <= now)."""
+    from app.crawler.scheduler import daily_crawler_executor, crawler_state
+    if crawler_state.get("is_running"):
+        raise HTTPException(status_code=409, detail="Crawler is already running")
+
+    async def run():
+        crawler_state["is_running"] = True
+        try:
+            await daily_crawler_executor()
+        finally:
+            crawler_state["is_running"] = False
+
+    background_tasks.add_task(run)
+    return {"message": "Daily crawler executor triggered"}
     return {"message": "Weekly schedule distribution triggered"}
