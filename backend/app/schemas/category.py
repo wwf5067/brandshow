@@ -12,6 +12,9 @@ class CategoryResponse(BaseModel):
     last_crawled_at: datetime | None
     next_crawl_at: datetime | None
     brand_count: int = 0
+    health_tag: str | None = None    # green / red / yellow
+    health_note: str | None = None
+    tags: list[str] | None = None    # 多维度标签
 
     model_config = {"from_attributes": True}
 

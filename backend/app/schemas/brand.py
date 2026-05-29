@@ -12,6 +12,8 @@ class BrandResponse(BaseModel):
     logo_url: str | None
     detail_url: str | None
     company_name: str | None
+    tags: list[str] | None = None
+    brand_note: str | None = None
     updated_at: datetime | None
 
     model_config = {"from_attributes": True}

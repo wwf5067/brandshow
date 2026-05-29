@@ -29,6 +29,19 @@
                   >{{ row.name }}</a>
                   <span v-else class="brand-name">{{ row.name }}</span>
                   <span v-if="row.company_name" class="company-name">{{ row.company_name }}</span>
+                  <!-- 品牌标签 -->
+                  <div v-if="row.tags && row.tags.length" class="brand-tags">
+                    <el-tag
+                      v-for="tag in row.tags"
+                      :key="tag"
+                      :type="brandTagType(tag)"
+                      size="small"
+                      effect="plain"
+                      class="brand-tag"
+                    >{{ tag }}</el-tag>
+                  </div>
+                  <!-- 品牌说明 -->
+                  <div v-if="row.brand_note" class="brand-note">{{ row.brand_note }}</div>
                 </div>
               </div>
             </template>
@@ -93,8 +106,14 @@ function formatDate(iso) {
 
 function proxyLogo(url) {
   if (!url) return ''
-  // 将 img.chinapp.com 图片路由到本地代理，绕过防盗链
   return url.replace(/^https?:\/\/img\.chinapp\.com/, '/img-proxy')
+}
+
+function brandTagType(tag) {
+  if (['推荐','国货之光','高性价比','口碑稳定','创新技术','高端品质','品质优秀'].includes(tag)) return 'success'
+  if (['❌避雷','有召回记录'].includes(tag)) return 'danger'
+  if (['有争议'].includes(tag)) return 'warning'
+  return 'info'
 }
 </script>
 
@@ -132,6 +151,14 @@ function proxyLogo(url) {
   font-size: 11px;
   color: #909399;
   margin-top: 2px;
+}
+.brand-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
+.brand-tag { font-size: 10px !important; padding: 0 4px !important; height: 16px !important; line-height: 16px !important; }
+.brand-note {
+  font-size: 11px; color: #606266; margin-top: 4px;
+  line-height: 1.5; max-width: 280px;
+  display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden;
 }
 
 .index-val { font-weight: 600; color: #e6a23c; }

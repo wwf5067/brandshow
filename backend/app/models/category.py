@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, JSON
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -13,6 +13,9 @@ class Category(Base):
     slug = Column(String(200), unique=True, nullable=False)
     parent_name = Column(String(200), nullable=True)
     group_name = Column(String(200), nullable=True)   # 大类，如"手机数码"
+    health_tag = Column(String(10), nullable=True)     # green/red/yellow
+    health_note = Column(String(500), nullable=True)   # 健康说明
+    tags = Column(JSON, nullable=True)                 # 多维度标签数组
     last_crawled_at = Column(DateTime, nullable=True)
     next_crawl_at = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=True)

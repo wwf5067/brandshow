@@ -41,4 +41,10 @@ export const api = {
   triggerWeeklySchedule() {
     return http.post('/crawler/schedule/weekly')
   },
+  triggerDailyRun() {
+    return http.post('/crawler/run/daily')
+  },
+  searchBrands(name) {
+    return http.get('/brands/search', { params: { name } })
+  },
 }

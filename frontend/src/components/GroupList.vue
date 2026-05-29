@@ -27,10 +27,16 @@
                 v-for="cat in searchCats"
                 :key="cat.id"
                 class="cat-card"
-                :class="{ active: activeCat === cat.id, 'no-data': !cat.brand_count }"
+                :class="[
+                  { active: activeCat === cat.id, 'no-data': !cat.brand_count },
+                  cat.health_tag ? `health-${cat.health_tag}` : ''
+                ]"
                 @click="openBrands(cat)"
               >
-                <span class="cat-card-name">{{ cat.name }}</span>
+                <div class="cat-card-top">
+                  <span class="cat-card-name">{{ cat.name }}</span>
+                  <span v-if="cat.health_tag" class="health-icon">{{ healthIcon(cat.health_tag) }}</span>
+                </div>
                 <el-tag size="small" :type="cat.brand_count ? 'success' : 'info'" effect="plain">
                   {{ cat.brand_count }} 品牌
                 </el-tag>
@@ -82,10 +88,16 @@
                   v-for="cat in noParentCats"
                   :key="cat.id"
                   class="cat-card"
-                  :class="{ active: activeCat === cat.id, 'no-data': !cat.brand_count }"
+                  :class="[
+                    { active: activeCat === cat.id, 'no-data': !cat.brand_count },
+                    cat.health_tag ? `health-${cat.health_tag}` : ''
+                  ]"
                   @click="openBrands(cat)"
                 >
-                  <span class="cat-card-name">{{ cat.name }}</span>
+                  <div class="cat-card-top">
+                    <span class="cat-card-name">{{ cat.name }}</span>
+                    <span v-if="cat.health_tag" class="health-icon">{{ healthIcon(cat.health_tag) }}</span>
+                  </div>
                   <el-tag size="small" :type="cat.brand_count ? 'success' : 'info'" effect="plain">
                     {{ cat.brand_count }} 品牌
                   </el-tag>
@@ -99,10 +111,16 @@
                 v-for="cat in activeCats"
                 :key="cat.id"
                 class="cat-card"
-                :class="{ active: activeCat === cat.id, 'no-data': !cat.brand_count }"
+                :class="[
+                  { active: activeCat === cat.id, 'no-data': !cat.brand_count },
+                  cat.health_tag ? `health-${cat.health_tag}` : ''
+                ]"
                 @click="openBrands(cat)"
               >
-                <span class="cat-card-name">{{ cat.name }}</span>
+                <div class="cat-card-top">
+                  <span class="cat-card-name">{{ cat.name }}</span>
+                  <span v-if="cat.health_tag" class="health-icon">{{ healthIcon(cat.health_tag) }}</span>
+                </div>
                 <el-tag size="small" :type="cat.brand_count ? 'success' : 'info'" effect="plain">
                   {{ cat.brand_count }} 品牌
                 </el-tag>
@@ -149,6 +167,15 @@
         </div>
       </template>
       <BrandTable v-if="drawerCatId" :key="brandTableKey" :category-id="drawerCatId" />
+
+      <!-- 健康标注说明 -->
+      <div v-if="drawerCat && drawerCat.health_note" class="health-notice" :class="`health-notice-${drawerCat.health_tag}`">
+        <span class="health-notice-icon">{{ healthIcon(drawerCat.health_tag) }}</span>
+        <div>
+          <div class="health-notice-title">{{ healthLabel(drawerCat.health_tag) }}</div>
+          <div class="health-notice-text">{{ drawerCat.health_note }}</div>
+        </div>
+      </div>
     </el-drawer>
   </div>
 </template>
@@ -276,6 +303,14 @@ function openBrands(cat) {
 function formatDate(iso) {
   if (!iso) return ''
   return new Date(iso).toLocaleDateString('zh-CN')
+}
+
+function healthIcon(tag) {
+  return { green: '✅', red: '⚠️', yellow: '🟡' }[tag] || ''
+}
+
+function healthLabel(tag) {
+  return { green: '健康推荐', red: '建议少吃', yellow: '适量为宜' }[tag] || ''
 }
 
 async function triggerCrawl() {
@@ -426,6 +461,32 @@ watch(() => store.searchKeyword, () => {
 .cat-card.active { border-color: #43a047; background: #f1f8e9; }
 .cat-card.no-data { opacity: 0.45; }
 .cat-card-name { font-size: 13px; font-weight: 500; color: #303133; }
+.cat-card-top { display: flex; align-items: center; justify-content: space-between; gap: 4px; width: 100%; }
+.health-icon { font-size: 13px; flex-shrink: 0; }
+
+/* 健康标注卡片边框 */
+.cat-card.health-green { border-color: #b7eb8f; }
+.cat-card.health-green:hover, .cat-card.health-green:active { border-color: #52c41a; background: #f6ffed; }
+.cat-card.health-red { border-color: #ffccc7; }
+.cat-card.health-red:hover, .cat-card.health-red:active { border-color: #ff4d4f; background: #fff2f0; }
+.cat-card.health-yellow { border-color: #ffe58f; }
+.cat-card.health-yellow:hover, .cat-card.health-yellow:active { border-color: #faad14; background: #fffbe6; }
+
+/* 抽屉内健康说明 */
+.health-notice {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin-top: 16px; padding: 12px 16px;
+  border-radius: 8px; font-size: 13px; line-height: 1.6;
+}
+.health-notice-green { background: #f6ffed; border: 1px solid #b7eb8f; }
+.health-notice-red { background: #fff2f0; border: 1px solid #ffccc7; }
+.health-notice-yellow { background: #fffbe6; border: 1px solid #ffe58f; }
+.health-notice-icon { font-size: 20px; flex-shrink: 0; margin-top: 1px; }
+.health-notice-title { font-weight: 600; margin-bottom: 3px; }
+.health-notice-green .health-notice-title { color: #389e0d; }
+.health-notice-red .health-notice-title { color: #cf1322; }
+.health-notice-yellow .health-notice-title { color: #d48806; }
+.health-notice-text { color: #595959; }
 
 /* ── 抽屉标题 ── */
 .drawer-header { display: flex; flex-direction: column; gap: 4px; }

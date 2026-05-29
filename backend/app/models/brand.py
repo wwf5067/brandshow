@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, JSON
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -17,6 +17,8 @@ class Brand(Base):
     logo_url = Column(String(500), nullable=True)
     detail_url = Column(String(500), nullable=True)
     company_name = Column(String(300), nullable=True)
+    tags = Column(JSON, nullable=True)           # 品牌标签，如 ["recommended", "domestic"]
+    brand_note = Column(String(300), nullable=True)  # 品牌说明
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
