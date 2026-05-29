@@ -1,10 +1,10 @@
 # 推 main 时自动部署到腾讯云 Lighthouse
 #
-# 优化方案：构建镜像后直接 scp 传到服务器，不走 GHCR（国内拉取慢）
-#
-# 流程:
-#   1) 并行：构建前端静态产物 + 构建后端 Docker 镜像（tar.zst）
-#   2) deploy：SSH 传输产物 → 服务器 docker load → alembic migrate → 重启容器
+# 加速优化：
+#   - 检测前端/后端文件是否变化，没变化则跳过 build，直接复用上次产物
+#   - 前端/后端并行构建
+#   - GHA layer cache 加速 Docker build
+#   - concurrency 取消旧的 run
 #
 # 必需的 GitHub Secrets:
 #   SSH_HOST / SSH_USER / SSH_PORT / SSH_KEY
@@ -16,39 +16,63 @@ on:
     branches: [main]
   workflow_dispatch: {}
 
-# 同一时间只允许一个 deploy，新 push 自动取消旧的
 concurrency:
   group: deploy-production
   cancel-in-progress: true
 
 jobs:
+  # ── 检测变化 ──────────────────────────────────────────────
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+            backend:
+              - 'backend/**'
+              - 'deploy/nginx.conf'
+
+  # ── 构建前端 ──────────────────────────────────────────────
   build-frontend:
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      # 如果前端没有变化，尝试从 cache 恢复上次产物
+      - name: Restore frontend cache
+        id: fe-cache
+        uses: actions/cache@v4
         with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          path: web-dist.tar.gz
+          key: frontend-dist-${{ hashFiles('frontend/src/**', 'frontend/package.json', 'frontend/vite.config.js') }}
+          restore-keys: frontend-dist-
 
-      - run: npm ci
-        working-directory: frontend
-
-      - run: npm run build
-        working-directory: frontend
-
-      - name: Pack frontend dist
-        run: tar -czf web-dist.tar.gz -C frontend/dist .
+      - name: Build frontend
+        if: needs.changes.outputs.frontend == 'true' || steps.fe-cache.outputs.cache-hit != 'true'
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+          cd ..
+          tar -czf web-dist.tar.gz -C frontend/dist .
 
       - uses: actions/upload-artifact@v4
         with:
           name: web-dist
           path: web-dist.tar.gz
-          retention-days: 1
+          retention-days: 3
 
+  # ── 构建后端 ──────────────────────────────────────────────
   build-backend:
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +86,6 @@ jobs:
           file: backend/Dockerfile
           push: false
           tags: brandshow-backend:latest
-          # runner 本地 cache，加速重复构建
           cache-from: type=gha,scope=backend
           cache-to: type=gha,scope=backend,mode=max
           outputs: type=docker
@@ -78,8 +101,9 @@ jobs:
           path: backend-image.tar.zst
           retention-days: 1
 
+  # ── 部署 ──────────────────────────────────────────────────
   deploy:
-    needs: [build-frontend, build-backend]
+    needs: [changes, build-frontend, build-backend]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -109,21 +133,21 @@ jobs:
 
       - name: Deploy on server
         env:
-          IMAGE_SHA: ${{ github.sha }}
+          BACKEND_CHANGED: ${{ needs.changes.outputs.backend }}
+          FRONTEND_CHANGED: ${{ needs.changes.outputs.frontend }}
         run: |
           ssh -tt \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=20 \
             -p ${{ secrets.SSH_PORT || 22 }} \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            'bash -s' << 'REMOTE'
+            "BACKEND_CHANGED='${BACKEND_CHANGED}' FRONTEND_CHANGED='${FRONTEND_CHANGED}' bash -s" << 'REMOTE'
             set -euo pipefail
             APP_DIR=/opt/brandshow
 
-            echo "==> Loading backend image..."
-            zstd -d /tmp/backend-image.tar.zst --stdout | docker load
-            rm /tmp/backend-image.tar.zst
+            echo "==> Backend changed: ${BACKEND_CHANGED}, Frontend changed: ${FRONTEND_CHANGED}"
 
+            # ── 更新前端 ──
             echo "==> Updating frontend..."
             mkdir -p "$APP_DIR/web-dist-staging"
             rm -rf "$APP_DIR/web-dist-staging"/*
@@ -132,11 +156,21 @@ jobs:
             rsync -a --delete "$APP_DIR/web-dist-staging/" "$APP_DIR/web-dist/"
             rm -rf "$APP_DIR/web-dist-staging"
 
-            echo "==> Updating nginx.conf..."
+            # ── 更新 nginx 配置 ──
             OLD_HASH=$(sha256sum "$APP_DIR/nginx.conf" 2>/dev/null | cut -d' ' -f1 || echo "")
             cp /tmp/nginx.conf "$APP_DIR/nginx.conf"
             NEW_HASH=$(sha256sum "$APP_DIR/nginx.conf" | cut -d' ' -f1)
+            if [ "$OLD_HASH" != "$NEW_HASH" ]; then
+              echo "==> nginx.conf changed, restarting nginx..."
+              docker restart brandshow-nginx
+            fi
 
+            # ── 加载后端镜像 ──
+            echo "==> Loading backend image..."
+            zstd -d /tmp/backend-image.tar.zst --stdout | docker load
+            rm /tmp/backend-image.tar.zst
+
+            # ── 数据库迁移 ──
             echo "==> Running migrations..."
             docker run --rm \
               --network newsfeed_default \
@@ -145,6 +179,7 @@ jobs:
               brandshow-backend:latest \
               alembic upgrade head
 
+            # ── 重启后端 ──
             echo "==> Restarting backend..."
             docker rm -f brandshow-backend 2>/dev/null || true
             docker run -d \
@@ -155,17 +190,12 @@ jobs:
               -e ENVIRONMENT=production \
               -e CORS_ORIGINS="*" \
               brandshow-backend:latest
-            # 同时加入 brandshow_net 让 nginx 能访问
             docker network connect brandshow_net brandshow-backend 2>/dev/null || true
 
-            if [ "$OLD_HASH" != "$NEW_HASH" ]; then
-              echo "==> nginx.conf changed, restarting nginx..."
-              docker restart brandshow-nginx
-            fi
+            # ── 清理旧镜像 ──
+            docker image prune -f 2>/dev/null || true
 
-            # 清理旧镜像（保留最近 1 个）
-            docker image prune -f --filter "label!=keep" 2>/dev/null || true
-
+            # ── 健康检查 ──
             echo "==> Healthcheck..."
             for i in $(seq 1 15); do
               code=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:8090/health || echo "000")
