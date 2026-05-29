@@ -172,8 +172,15 @@ jobs:
           }
           upsert_env BACKEND_IMAGE "ghcr.io/${OWNER}/brandshow-backend:${IMAGE_TAG}"
 
-          # 拉取最新镜像
-          docker compose -f docker-compose.prod.yml --progress plain pull
+          # 只在镜像 tag 变化时才拉取（减少国内带宽等待）
+          CURRENT_IMAGE=$(docker inspect --format '{{.Config.Image}}' brandshow-backend-1 2>/dev/null || echo "")
+          NEW_IMAGE="ghcr.io/${OWNER}/brandshow-backend:${IMAGE_TAG}"
+          if [ "$CURRENT_IMAGE" != "$NEW_IMAGE" ]; then
+            echo "==> Pulling new image: ${IMAGE_TAG}"
+            docker pull "$NEW_IMAGE"
+          else
+            echo "==> Image unchanged, skip pull"
+          fi
 
           # 运行数据库迁移
           docker compose -f docker-compose.prod.yml --progress plain run --rm migrate
