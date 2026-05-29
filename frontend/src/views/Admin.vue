@@ -146,9 +146,10 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="80" fixed="right">
+        <el-table-column label="操作" width="130" fixed="right">
           <template #default="{ row }">
             <el-button size="small" type="primary" plain @click="triggerOne(row.id)">爬取</el-button>
+            <el-button size="small" plain @click="viewCategory(row)">查看</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -169,10 +170,12 @@
 
 <script setup>
 import { ref, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
 import { useCategoryStore } from '../stores/category'
 
+const router = useRouter()
 const categoryStore = useCategoryStore()
 
 const status = ref(null)
@@ -310,6 +313,14 @@ async function triggerOne(id) {
   } catch (e) {
     ElMessage.error(e.message)
   }
+}
+
+function viewCategory(row) {
+  // 保存导航状态，跳转到首页展示该小类的品牌排行
+  categoryStore.saveNav(row.group_name, row.parent_name || '__none__')
+  // 同时触发品牌数据加载和抽屉打开
+  categoryStore.clearBrandsCache(row.id)
+  router.push({ path: '/', query: { catId: row.id, catName: row.name } })
 }
 
 onMounted(() => {

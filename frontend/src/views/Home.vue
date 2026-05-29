@@ -33,13 +33,14 @@
     </div>
 
     <!-- 内容区 -->
-    <GroupList v-if="tab === 'browse'" />
+    <GroupList v-if="tab === 'browse'" :auto-open-cat-id="pendingCatId" :auto-open-cat-name="pendingCatName" />
     <BrandSearch v-else @goto-category="gotoCategory" />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import SearchBar from '../components/SearchBar.vue'
 import GroupList from '../components/GroupList.vue'
 import BrandSearch from '../components/BrandSearch.vue'
@@ -49,14 +50,23 @@ import { api } from '../api'
 const store = useCategoryStore()
 const stats = ref(null)
 const tab = ref('browse')
+const route = useRoute()
+
+// 从管理后台跳转过来时，自动定位并打开品牌抽屉
+const pendingCatId = ref(null)
+const pendingCatName = ref(null)
 
 function gotoCategory(cat) {
-  // 切换到浏览 tab，并导航到对应大类/中类，GroupList 会从 store.navGroup/navParent 恢复
   store.saveNav(cat.group_name, cat.parent_name || '__none__')
   tab.value = 'browse'
 }
 
 onMounted(async () => {
+  // 检查是否从管理后台带了 catId 参数
+  if (route.query.catId) {
+    pendingCatId.value = Number(route.query.catId)
+    pendingCatName.value = route.query.catName || ''
+  }
   store.fetchGroups()
   try { stats.value = await api.getCrawlerStatus() } catch {}
 })

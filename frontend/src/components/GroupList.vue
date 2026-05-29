@@ -192,18 +192,33 @@ const store = useCategoryStore()
 
 const activeGroup = ref(store.navGroup)
 const activeParent = ref(store.navParent)
+const props = defineProps({
+  autoOpenCatId: { type: Number, default: null },
+  autoOpenCatName: { type: String, default: '' },
+})
+
 const activeCat = ref(null)
 const drawerVisible = ref(false)
 const drawerCatId = ref(null)
 const drawerCat = ref(null)
 const drawerTitle = ref('')
 const crawling = ref(false)
-const brandTableKey = ref(0)  // 用于强制重新挂载 BrandTable
+const brandTableKey = ref(0)
 
 // 响应式：判断是否手机
 const isMobile = ref(window.innerWidth <= 640)
 function onResize() { isMobile.value = window.innerWidth <= 640 }
-onMounted(() => window.addEventListener('resize', onResize))
+onMounted(() => {
+  window.addEventListener('resize', onResize)
+  // 从管理后台跳转过来时自动打开品牌抽屉
+  if (props.autoOpenCatId) {
+    drawerCatId.value = props.autoOpenCatId
+    drawerTitle.value = props.autoOpenCatName || '品牌排行'
+    drawerCat.value = { id: props.autoOpenCatId, name: props.autoOpenCatName }
+    drawerVisible.value = true
+    store.fetchBrands(props.autoOpenCatId)
+  }
+})
 onUnmounted(() => window.removeEventListener('resize', onResize))
 
 // 大类图标映射
