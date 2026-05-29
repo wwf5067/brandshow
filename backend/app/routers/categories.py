@@ -39,10 +39,33 @@ async def _with_brand_count(db: AsyncSession, cats: list[Category]) -> list[Cate
     return items
 
 
+@router.get("/meta")
+async def get_categories_meta(db: AsyncSession = Depends(get_db)):
+    """返回所有大类和中类列表，用于筛选器。"""
+    groups_result = await db.execute(
+        select(func.distinct(Category.group_name))
+        .where(Category.group_name.isnot(None))
+        .order_by(Category.group_name)
+    )
+    groups = [r[0] for r in groups_result]
+
+    parents_result = await db.execute(
+        select(Category.group_name, func.distinct(Category.parent_name))
+        .where(Category.parent_name.isnot(None))
+        .order_by(Category.group_name, Category.parent_name)
+    )
+    parents: dict[str, list[str]] = {}
+    for row in parents_result:
+        parents.setdefault(row[0], []).append(row[1])
+
+    return {"groups": groups, "parents": parents}
+
+
 @router.get("", response_model=CategoryListResponse)
 async def list_categories(
     search: str = Query("", description="Filter by category name"),
     group_name: str = Query("", description="Filter by group name"),
+    parent_name: str = Query("", description="Filter by parent name"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -52,6 +75,8 @@ async def list_categories(
         query = query.where(Category.name.ilike(f"%{search}%"))
     if group_name:
         query = query.where(Category.group_name == group_name)
+    if parent_name:
+        query = query.where(Category.parent_name == parent_name)
 
     total_result = await db.execute(select(func.count()).select_from(query.subquery()))
     total = total_result.scalar_one()

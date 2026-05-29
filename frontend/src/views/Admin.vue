@@ -76,30 +76,40 @@
     <el-card class="cats-card" shadow="never">
       <template #header>
         <div class="card-header">
-          <span>类别列表</span>
+          <span>类别列表 <span class="cat-total">共 {{ catTotal }} 条</span></span>
           <div class="cat-filters">
+            <!-- 大类 -->
             <el-select
               v-model="catGroupFilter"
-              placeholder="按大类筛选"
+              placeholder="大类"
               size="small"
               clearable
-              style="width:140px"
+              style="width:120px"
+              @change="onGroupChange"
+            >
+              <el-option v-for="g in allGroups" :key="g" :label="g" :value="g" />
+            </el-select>
+            <!-- 中类（随大类联动） -->
+            <el-select
+              v-model="catParentFilter"
+              placeholder="中类"
+              size="small"
+              clearable
+              :disabled="!catGroupFilter"
+              style="width:120px"
               @change="loadCategories(1)"
             >
-              <el-option
-                v-for="g in groupOptions"
-                :key="g"
-                :label="g"
-                :value="g"
-              />
+              <el-option v-for="p in currentParents" :key="p" :label="p" :value="p" />
             </el-select>
+            <!-- 搜索 -->
             <el-input
               v-model="catSearch"
               placeholder="搜索类别名"
               size="small"
               clearable
-              style="width:180px"
+              style="width:160px"
               @input="debouncedSearch"
+              @clear="loadCategories(1)"
             />
           </div>
         </div>
@@ -176,15 +186,31 @@ const categories = ref([])
 const catLoading = ref(false)
 const catSearch = ref('')
 const catGroupFilter = ref('')
+const catParentFilter = ref('')
 const catPage = ref(1)
 const catTotal = ref(0)
 let searchTimer = null
 
-// 大类选项（从已加载数据动态生成）
-const groupOptions = computed(() => {
-  const groups = new Set(categories.value.map(c => c.group_name).filter(Boolean))
-  return [...groups].sort()
-})
+// 全量大类/中类（从 /meta 接口获取，不依赖当前页数据）
+const allGroups = ref([])
+const allParents = ref({})  // { group_name: [parent_name, ...] }
+
+const currentParents = computed(() =>
+  catGroupFilter.value ? (allParents.value[catGroupFilter.value] || []) : []
+)
+
+async function loadMeta() {
+  try {
+    const res = await api.getCategoriesMeta()
+    allGroups.value = res.groups
+    allParents.value = res.parents
+  } catch {}
+}
+
+function onGroupChange() {
+  catParentFilter.value = ''
+  loadCategories(1)
+}
 
 async function loadStatus() {
   refreshing.value = true
@@ -202,6 +228,7 @@ async function loadCategories(page = catPage.value) {
     const res = await api.getCategories({
       search: catSearch.value,
       group_name: catGroupFilter.value,
+      parent_name: catParentFilter.value,
       page,
       page_size: 20,
     })
@@ -288,7 +315,7 @@ async function triggerOne(id) {
 onMounted(() => {
   loadStatus()
   loadCategories()
-  // 如果打开时正在爬取，自动开始轮询
+  loadMeta()
   if (status.value?.is_running) startPolling()
 })
 </script>
@@ -315,7 +342,8 @@ onMounted(() => {
 
 .trigger-row { display: flex; gap: 8px; align-items: center; }
 
-.cat-filters { display: flex; gap: 8px; align-items: center; }
+.cat-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.cat-total { font-size: 12px; color: #909399; font-weight: 400; margin-left: 4px; }
 .cat-pagination { margin-top: 16px; display: flex; justify-content: flex-end; }
 .text-gray { color: #c0c4cc; }
 .text-secondary { color: #606266; font-size: 12px; }

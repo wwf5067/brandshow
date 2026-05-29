@@ -14,8 +14,11 @@ http.interceptors.response.use(
 )
 
 export const api = {
-  getCategories({ search = '', group_name = '', page = 1, page_size = 20 } = {}) {
-    return http.get('/categories', { params: { search, group_name, page, page_size } })
+  getCategories({ search = '', group_name = '', parent_name = '', page = 1, page_size = 20 } = {}) {
+    return http.get('/categories', { params: { search, group_name, parent_name, page, page_size } })
+  },
+  getCategoriesMeta() {
+    return http.get('/categories/meta')
   },
   getCategoryGroups(search = '') {
     return http.get('/categories/groups', { params: { search } })

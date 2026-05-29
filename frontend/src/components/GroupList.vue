@@ -123,7 +123,18 @@
     >
       <template #header>
         <div class="drawer-header">
-          <div class="drawer-title">{{ drawerTitle }}</div>
+          <div class="drawer-title-row">
+            <div class="drawer-title">{{ drawerTitle }}</div>
+            <el-button
+              size="small"
+              :loading="crawling"
+              :type="drawerCat && !drawerCat.last_crawled_at ? 'primary' : 'default'"
+              @click="triggerCrawl"
+            >
+              <el-icon v-if="!crawling"><Refresh /></el-icon>
+              {{ crawling ? '爬取中...' : (drawerCat && !drawerCat.last_crawled_at ? '立即爬取' : '重新爬取') }}
+            </el-button>
+          </div>
           <div v-if="drawerCat" class="drawer-meta">
             <span v-if="drawerCat.group_name" class="meta-path">
               {{ drawerCat.group_name }}
@@ -137,15 +148,18 @@
           </div>
         </div>
       </template>
-      <BrandTable v-if="drawerCatId" :category-id="drawerCatId" />
+      <BrandTable v-if="drawerCatId" :key="brandTableKey" :category-id="drawerCatId" />
     </el-drawer>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { Refresh } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import BrandTable from './BrandTable.vue'
 import { useCategoryStore } from '../stores/category'
+import { api } from '../api'
 
 const store = useCategoryStore()
 
@@ -156,6 +170,8 @@ const drawerVisible = ref(false)
 const drawerCatId = ref(null)
 const drawerCat = ref(null)
 const drawerTitle = ref('')
+const crawling = ref(false)
+const brandTableKey = ref(0)  // 用于强制重新挂载 BrandTable
 
 // 响应式：判断是否手机
 const isMobile = ref(window.innerWidth <= 640)
@@ -260,6 +276,39 @@ function openBrands(cat) {
 function formatDate(iso) {
   if (!iso) return ''
   return new Date(iso).toLocaleDateString('zh-CN')
+}
+
+async function triggerCrawl() {
+  if (!drawerCatId.value || crawling.value) return
+  crawling.value = true
+  try {
+    await api.triggerCategory(drawerCatId.value)
+    ElMessage.success('爬取已触发，数据将在几秒内更新')
+    store.clearBrandsCache(drawerCatId.value)
+    // 轮询等待爬取完成，最多等 30 秒
+    let retries = 0
+    const poll = setInterval(async () => {
+      retries++
+      store.clearBrandsCache(drawerCatId.value)
+      await store.fetchBrands(drawerCatId.value)
+      const brands = store.brandsCache[drawerCatId.value]
+      if ((brands && brands.length > 0) || retries >= 6) {
+        clearInterval(poll)
+        crawling.value = false
+        if (brands && brands.length > 0) {
+          brandTableKey.value++
+          // 刷新 groups，更新小类卡片的品牌数
+          await store.fetchGroups()
+          ElMessage.success(`爬取完成，获取到 ${brands.length} 个品牌`)
+        } else {
+          ElMessage.warning('爬取完成，暂无数据（可能该类别尚未被网站收录）')
+        }
+      }
+    }, 5000)
+  } catch (e) {
+    crawling.value = false
+    ElMessage.error(e.message || '触发爬取失败')
+  }
 }
 
 watch(() => store.searchKeyword, () => {
@@ -380,6 +429,12 @@ watch(() => store.searchKeyword, () => {
 
 /* ── 抽屉标题 ── */
 .drawer-header { display: flex; flex-direction: column; gap: 4px; }
+.drawer-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 .drawer-title { font-size: 17px; font-weight: 700; color: #1a1a2e; }
 .drawer-meta { display: flex; align-items: center; gap: 8px; margin-top: 2px; flex-wrap: wrap; }
 .meta-path { font-size: 12px; color: #909399; }
