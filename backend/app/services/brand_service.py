@@ -1,8 +1,10 @@
 import logging
+from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.brand import Brand
+from app.models.brand_rank_history import BrandRankHistory
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +24,9 @@ async def _get_brand_annotation(db: AsyncSession, name: str) -> tuple[list | Non
 
 async def upsert_brands(db: AsyncSession, category_id: int, brands_data: list[dict]) -> None:
     """Insert or update brands for a category, tracking rank changes.
-    
+
     新品牌自动从同名品牌继承 tags 和 brand_note。
+    每次爬取后记录排名快照到 brand_rank_history，供趋势图使用。
     """
     for data in brands_data:
         name = data.get("name", "").strip()
@@ -76,5 +79,19 @@ async def upsert_brands(db: AsyncSession, category_id: int, brands_data: list[di
                 logger.info("New brand %s inherited tags: %s", name, tags)
             else:
                 logger.info("New brand added: %s in category %d at rank %d", name, category_id, data.get("rank", 0))
+
+    # flush 确保新品牌获得 id，然后批量写排名历史快照
+    await db.flush()
+    now = datetime.now()
+    brands_result = await db.execute(
+        select(Brand).where(Brand.category_id == category_id)
+    )
+    for brand in brands_result.scalars().all():
+        db.add(BrandRankHistory(
+            brand_id=brand.id,
+            category_id=category_id,
+            rank=brand.rank,
+            recorded_at=now,
+        ))
 
     await db.commit()

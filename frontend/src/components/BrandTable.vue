@@ -3,79 +3,106 @@
     <el-skeleton :loading="loading" :rows="4" animated>
       <template #default>
         <el-empty v-if="!brands.length" description="暂无品牌数据" :image-size="60" />
-        <el-table v-else :data="brands" size="small" stripe style="width: 100%">
-          <el-table-column label="排名" width="70" align="center">
-            <template #default="{ row }">
-              <span :class="['rank-badge', `rank-${row.rank}`]">{{ row.rank }}</span>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="品牌" min-width="160">
-            <template #default="{ row }">
-              <div class="brand-cell">
-                <el-avatar
-                  v-if="row.logo_url"
-                  :src="proxyLogo(row.logo_url)"
-                  :size="32"
-                  shape="square"
-                  @error="() => true"
-                />
-                <div class="brand-info">
-                  <a
-                    v-if="row.detail_url"
-                    :href="row.detail_url"
-                    target="_blank"
-                    class="brand-name"
-                  >{{ row.name }}</a>
-                  <span v-else class="brand-name">{{ row.name }}</span>
-                  <span v-if="row.company_name" class="company-name">{{ row.company_name }}</span>
-                  <!-- 品牌标签 -->
-                  <div v-if="row.tags && row.tags.length" class="brand-tags">
-                    <el-tag
-                      v-for="tag in row.tags"
-                      :key="tag"
-                      :type="brandTagType(tag)"
-                      size="small"
-                      effect="plain"
-                      class="brand-tag"
-                    >{{ tag }}</el-tag>
-                  </div>
-                  <!-- 品牌说明 -->
-                  <div v-if="row.brand_note" class="brand-note">{{ row.brand_note }}</div>
-                </div>
-              </div>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="排名变化" width="90" align="center">
-            <template #default="{ row }">
-              <template v-if="row.prev_rank && row.prev_rank !== row.rank">
-                <el-tag
-                  :type="row.rank < row.prev_rank ? 'success' : 'danger'"
-                  size="small"
-                >
-                  {{ row.rank < row.prev_rank ? '↑' : '↓' }}
-                  {{ Math.abs(row.prev_rank - row.rank) }}
-                </el-tag>
+        <template v-else>
+          <el-table :data="brands" size="small" stripe style="width: 100%">
+            <el-table-column label="排名" width="70" align="center">
+              <template #default="{ row }">
+                <span :class="['rank-badge', `rank-${row.rank}`]">{{ row.rank }}</span>
               </template>
-              <span v-else class="na">—</span>
-            </template>
-          </el-table-column>
+            </el-table-column>
 
-          <el-table-column label="更新" width="80" align="center">
-            <template #default="{ row }">
-              <span class="time-text">{{ formatDate(row.updated_at) }}</span>
+            <el-table-column label="品牌" min-width="160">
+              <template #default="{ row }">
+                <div class="brand-cell">
+                  <el-avatar
+                    v-if="row.logo_url"
+                    :src="proxyLogo(row.logo_url)"
+                    :size="32"
+                    shape="square"
+                    @error="() => true"
+                  />
+                  <div class="brand-info">
+                    <a
+                      v-if="row.detail_url"
+                      :href="row.detail_url"
+                      target="_blank"
+                      class="brand-name"
+                    >{{ row.name }}</a>
+                    <span v-else class="brand-name">{{ row.name }}</span>
+                    <span v-if="row.company_name" class="company-name">{{ row.company_name }}</span>
+                    <!-- 品牌标签 -->
+                    <div v-if="row.tags && row.tags.length" class="brand-tags">
+                      <el-tag
+                        v-for="tag in row.tags"
+                        :key="tag"
+                        :type="brandTagType(tag)"
+                        size="small"
+                        effect="plain"
+                        class="brand-tag"
+                      >{{ tag }}</el-tag>
+                    </div>
+                    <!-- 品牌说明 -->
+                    <div v-if="row.brand_note" class="brand-note">{{ row.brand_note }}</div>
+                  </div>
+                </div>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="排名变化" width="90" align="center">
+              <template #default="{ row }">
+                <template v-if="row.prev_rank && row.prev_rank !== row.rank">
+                  <el-tag
+                    :type="row.rank < row.prev_rank ? 'success' : 'danger'"
+                    size="small"
+                  >
+                    {{ row.rank < row.prev_rank ? '↑' : '↓' }}
+                    {{ Math.abs(row.prev_rank - row.rank) }}
+                  </el-tag>
+                </template>
+                <span v-else class="na">—</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="排名趋势" width="96" align="center">
+              <template #default="{ row }">
+                <div class="sparkline-cell">
+                  <RankSparkline
+                    v-if="historyMap[row.id]"
+                    :history="historyMap[row.id]"
+                    :width="72"
+                    :height="26"
+                  />
+                  <span v-else class="na">—</span>
+                </div>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="更新" width="80" align="center">
+              <template #default="{ row }">
+                <span class="time-text">{{ formatDate(row.updated_at) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <!-- 数据来源署名 -->
+          <div class="attribution">
+            数据来源:
+            <a href="https://www.chinapp.com" target="_blank" rel="noopener">chinapp.com</a>
+            <template v-if="lastUpdated">
+              · 最后更新: {{ lastUpdated }}
             </template>
-          </el-table-column>
-        </el-table>
+          </div>
+        </template>
       </template>
     </el-skeleton>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useCategoryStore } from '../stores/category'
+import { api } from '../api'
+import RankSparkline from './RankSparkline.vue'
 
 const props = defineProps({ categoryId: { type: Number, required: true } })
 const store = useCategoryStore()
@@ -83,9 +110,25 @@ const store = useCategoryStore()
 const loading = computed(() => !!store.brandsLoading[props.categoryId])
 const brands = computed(() => store.brandsCache[props.categoryId] || [])
 
+// 排名历史缓存，keyed by brand_id
+const historyMap = ref({})
+
+// 最近更新时间（取所有品牌 updated_at 的最大值）
+const lastUpdated = computed(() => {
+  const dates = brands.value.map(b => b.updated_at).filter(Boolean)
+  if (!dates.length) return ''
+  const latest = [...dates].sort().reverse()[0]
+  return new Date(latest).toLocaleDateString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit'
+  })
+})
+
 // 展开时拉取数据；若返回空则轮询重试（覆盖爬取尚未完成的窗口期）
 onMounted(async () => {
   await store.fetchBrands(props.categoryId)
+  // 并发拉取所有品牌的排名历史
+  fetchAllHistory()
+
   // 如果空，最多重试 4 次（每次间隔 5s），适用于刚触发爬取后立即展开的场景
   let retries = 0
   const poll = setInterval(async () => {
@@ -96,8 +139,22 @@ onMounted(async () => {
     retries++
     store.clearBrandsCache(props.categoryId)
     await store.fetchBrands(props.categoryId)
+    fetchAllHistory()
   }, 5000)
 })
+
+async function fetchAllHistory() {
+  const list = brands.value
+  if (!list.length) return
+  const settled = await Promise.allSettled(
+    list.map(b => api.getBrandRankHistory(b.id))
+  )
+  settled.forEach((res, i) => {
+    if (res.status === 'fulfilled') {
+      historyMap.value[list[i].id] = res.value
+    }
+  })
+}
 
 function formatDate(iso) {
   if (!iso) return '—'
@@ -111,7 +168,7 @@ function proxyLogo(url) {
 
 function brandTagType(tag) {
   if (['推荐','国货之光','高性价比','口碑稳定','创新技术','高端品质','品质优秀'].includes(tag)) return 'success'
-  if (['❌避雷','有召回记录'].includes(tag)) return 'danger'
+  if (['避雷','❌避雷','有召回记录'].includes(tag)) return 'danger'
   if (['有争议'].includes(tag)) return 'warning'
   return 'info'
 }
@@ -161,7 +218,25 @@ function brandTagType(tag) {
   -webkit-box-orient: vertical; overflow: hidden;
 }
 
-.index-val { font-weight: 600; color: #e6a23c; }
+.sparkline-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.attribution {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #c0c4cc;
+  text-align: right;
+  padding-right: 4px;
+}
+.attribution a {
+  color: #c0c4cc;
+  text-decoration: none;
+}
+.attribution a:hover { color: #909399; }
+
 .na { color: #c0c4cc; }
 .time-text { font-size: 12px; color: #909399; }
 </style>

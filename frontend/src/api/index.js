@@ -47,4 +47,13 @@ export const api = {
   searchBrands(name) {
     return http.get('/brands/search', { params: { name } })
   },
+  getBrandRankHistory(brandId, limit = 12) {
+    return http.get(`/brands/${brandId}/rank-history`, { params: { limit } })
+  },
+  getBrandBlacklist({ group_name, page = 1, page_size = 20 } = {}) {
+    return http.get('/brands/blacklist', { params: { group_name, page, page_size } })
+  },
+  getBrandDomestic({ group_name, page = 1, page_size = 20 } = {}) {
+    return http.get('/brands/domestic', { params: { group_name, page, page_size } })
+  },
 }
